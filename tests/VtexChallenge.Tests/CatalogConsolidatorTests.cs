@@ -147,8 +147,6 @@ public class CatalogConsolidatorTests : IDisposable
         var run = db.ImportRuns.Single();
         Assert.Equal(r.LinkedToExisting, run.LinkedToExisting);
         Assert.Equal(r.AlreadyLinked, run.AlreadyLinked);
-        Assert.Equal(r.Notes, run.Notes!.Split('\n'));
-        Assert.Single(r.Notes);
     }
 
     private static async IAsyncEnumerable<SellerProductEntry?> ThenThrow(Exception ex, params SellerProductEntry[] first)
@@ -223,7 +221,7 @@ public class CatalogConsolidatorTests : IDisposable
         var r = Run(entries);
         Assert.Equal(10, r.ProductsInserted);
         Assert.Equal((3 + 10, 10), Counts());
-        Assert.Equal(1190, r.Notes.Count);
+        Assert.Equal(1200, r.Read);
     }
 
     [Fact]
@@ -266,8 +264,7 @@ public class CatalogConsolidatorTests : IDisposable
     [Fact]
     public void SameSellerTwoSkusForSameProductKeepsFirst()
     {
-        var r = Run(E(1, "A", "iPhone 15 Pro", "Apple"), E(2, "A", "iPhone 15  Pro", "Apple"));
+        Run(E(1, "A", "iPhone 15 Pro", "Apple"), E(2, "A", "iPhone 15  Pro", "Apple"));
         Assert.Equal((3, 1), Counts());
-        Assert.Single(r.Notes);
     }
 }

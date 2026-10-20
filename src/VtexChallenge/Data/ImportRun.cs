@@ -16,6 +16,4 @@ public class ImportRun
     public int Rejected { get; set; }
     public int LinkedToExisting { get; set; }
     public int AlreadyLinked { get; set; }
-    /// <summary>One note per line.</summary>
-    public string? Notes { get; set; }
 }

@@ -13,7 +13,6 @@ public class ImportReport
     public int LinksCreated { get; init; }
     public int AlreadyLinked { get; init; }
     public int Rejected { get; init; }
-    public IReadOnlyList<string> Notes { get; init; } = [];
 
     public static ImportReport From(ImportRun run) => new()
     {
@@ -26,7 +25,6 @@ public class ImportReport
         LinksCreated = run.LinksCreated,
         AlreadyLinked = run.AlreadyLinked,
         Rejected = run.Rejected,
-        Notes = run.Notes?.Split('\n') ?? [],
     };
 
     public override string ToString()
@@ -43,7 +41,6 @@ public class ImportReport
             $"Rejected:                     {Rejected} (saved in RejectedEntry table)",
         };
         if (Error is not null) lines.Add($"Error: {Error}");
-        if (Notes.Count > 0) { lines.Add("Notes:"); lines.AddRange(Notes.Select(n => "  " + n)); }
         return string.Join(Environment.NewLine, lines);
     }
 }

@@ -10,13 +10,6 @@ public class CatalogConsolidator(CatalogDbContext db)
 
     private record Candidate(Product Product, string Brand, string Name);
 
-    /// <summary>State of one import: the run being recorded and the notes collected so far.</summary>
-    private class Session(ImportRun run)
-    {
-        public ImportRun Run { get; } = run;
-        public List<string> Notes { get; } = [];
-    }
-
     /// <summary>Lookups for one chunk of the feed, fetched from the database for just that chunk.</summary>
     private class Batch
     {
@@ -44,7 +37,7 @@ public class CatalogConsolidator(CatalogDbContext db)
         var run = await StartRunAsync(source);
         try
         {
-            await ImportEntriesAsync(new Session(run), entries);
+            await ImportEntriesAsync(run, entries);
         }
         catch (Exception ex)
         {
@@ -69,25 +62,25 @@ public class CatalogConsolidator(CatalogDbContext db)
         return run;
     }
 
-    private async Task ImportEntriesAsync(Session session, IAsyncEnumerable<SellerProductEntry?> entries)
+    private async Task ImportEntriesAsync(ImportRun run, IAsyncEnumerable<SellerProductEntry?> entries)
     {
         await using var tx = await db.Database.BeginTransactionAsync();
 
         await foreach (var chunk in entries.Chunk(BatchSize))
-            await ImportChunkAsync(session, chunk);
+            await ImportChunkAsync(run, chunk);
 
-        await CompleteRunAsync(session);
+        await CompleteRunAsync(run);
         await tx.CommitAsync();
     }
 
     /// <summary>Memory stays bounded by the chunk: look up only what it needs, save, then forget it.</summary>
-    private async Task ImportChunkAsync(Session session, SellerProductEntry?[] chunk)
+    private async Task ImportChunkAsync(ImportRun run, SellerProductEntry?[] chunk)
     {
         var items = chunk.Select(Check);
         var batch = await LoadBatchAsync(items.Where(i => i.Valid is not null).Select(i => i.Valid!));
 
         foreach (var item in items)
-            ProcessEntry(session, batch, item);
+            ProcessEntry(run, batch, item);
 
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
@@ -131,13 +124,12 @@ public class CatalogConsolidator(CatalogDbContext db)
         return batch;
     }
 
-    private void ProcessEntry(Session session, Batch batch, Checked item)
+    private void ProcessEntry(ImportRun run, Batch batch, Checked item)
     {
-        var run = session.Run;
         run.EntriesRead++;
         if (item.Valid is not { } valid)
         {
-            Reject(session, item.Entry, item.Error!);
+            Reject(run, item.Entry, item.Error!);
             return;
         }
 
@@ -146,12 +138,12 @@ public class CatalogConsolidator(CatalogDbContext db)
         if (batch.Skus.TryGetValue((valid.Seller, valid.Sku), out var owned))
         {
             if (match == owned) run.AlreadyLinked++;
-            else Reject(session, item.Entry, $"seller reused this id for a different product (\"{owned.Name}\")");
+            else Reject(run, item.Entry, $"seller reused this id for a different product (\"{owned.Name}\")");
             return;
         }
 
-        var product = match is null ? InsertProduct(session, batch, valid) : FillGaps(session, match, valid);
-        LinkSeller(session, batch, item.Entry!, valid, product);
+        var product = match is null ? InsertProduct(run, batch, valid) : FillGaps(run, match, valid);
+        LinkSeller(run, batch, valid, product);
     }
 
     private static (ValidEntry? Valid, string? Error) Validate(SellerProductEntry entry)
@@ -166,7 +158,7 @@ public class CatalogConsolidator(CatalogDbContext db)
         return (new ValidEntry(seller, name, guid.ToString("D"), Blank(entry.Brand), Blank(entry.Category)), null);
     }
 
-    private Product InsertProduct(Session session, Batch batch, ValidEntry entry)
+    private Product InsertProduct(ImportRun run, Batch batch, ValidEntry entry)
     {
         var product = new Product
         {
@@ -175,33 +167,29 @@ public class CatalogConsolidator(CatalogDbContext db)
             Category = entry.Category,
             NormalizedKey = ProductKey.Build(entry.Brand, entry.Name),
             NormalizedName = ProductKey.Normalize(entry.Name),
-            ImportId = session.Run.Id,
+            ImportId = run.Id,
         };
         db.Products.Add(product);
         Index(batch.ByName, product);
-        session.Run.ProductsInserted++;
+        run.ProductsInserted++;
         return product;
     }
 
     /// <summary>Catalog stays source of truth: an existing product only gets its missing brand/category filled.</summary>
-    private static Product FillGaps(Session session, Product product, ValidEntry entry)
+    private static Product FillGaps(ImportRun run, Product product, ValidEntry entry)
     {
         // the product is tracked (loaded for this chunk), so plain assignment is saved with the chunk
         product.Brand ??= entry.Brand;
         product.Category ??= entry.Category;
         product.NormalizedKey = ProductKey.Build(product.Brand, product.Name);
-        session.Run.LinkedToExisting++;
+        run.LinkedToExisting++;
         return product;
     }
 
-    private void LinkSeller(Session session, Batch batch, SellerProductEntry entry, ValidEntry valid, Product product)
+    private void LinkSeller(ImportRun run, Batch batch, ValidEntry valid, Product product)
     {
-        if (!batch.Links.Add((valid.Seller, product)))
-        {
-            var label = $"{entry.SellerName}/{entry.Id} \"{entry.Name}\"";
-            session.Notes.Add($"{label}: seller already offers \"{product.Name}\" under another id, kept first");
-            return;
-        }
+        // seller already offers this product under another id: keep the first link
+        if (!batch.Links.Add((valid.Seller, product))) return;
         batch.Skus[(valid.Seller, valid.Sku)] = product;
 
         db.SellerProducts.Add(new SellerProduct
@@ -209,14 +197,14 @@ public class CatalogConsolidator(CatalogDbContext db)
             SellerName = valid.Seller,
             SellerProductId = valid.Sku,
             Product = product,
-            ImportId = session.Run.Id,
+            ImportId = run.Id,
         });
-        session.Run.LinksCreated++;
+        run.LinksCreated++;
     }
 
-    private void Reject(Session session, SellerProductEntry? entry, string reason)
+    private void Reject(ImportRun run, SellerProductEntry? entry, string reason)
     {
-        session.Run.Rejected++;
+        run.Rejected++;
         db.RejectedEntries.Add(new RejectedEntry
         {
             SellerName = entry?.SellerName,
@@ -226,16 +214,14 @@ public class CatalogConsolidator(CatalogDbContext db)
             Category = entry?.Category,
             Reason = reason,
             RejectedAt = DateTime.UtcNow,
-            ImportId = session.Run.Id,
+            ImportId = run.Id,
         });
     }
 
-    private async Task CompleteRunAsync(Session session)
+    private async Task CompleteRunAsync(ImportRun run)
     {
-        var run = session.Run;
         run.State = ImportState.Completed;
         run.FinishedAt = DateTime.UtcNow;
-        run.Notes = session.Notes.Count > 0 ? string.Join('\n', session.Notes) : null;
         db.ImportRuns.Update(run);
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
@@ -250,7 +236,6 @@ public class CatalogConsolidator(CatalogDbContext db)
         run.FinishedAt = DateTime.UtcNow;
         run.EntriesRead = run.ProductsInserted = run.LinksCreated = run.Rejected = 0;
         run.LinkedToExisting = run.AlreadyLinked = 0;
-        run.Notes = null;
 
         await db.ImportRuns.Where(r => r.Id == run.Id).ExecuteUpdateAsync(s => s
             .SetProperty(r => r.State, run.State)

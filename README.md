@@ -18,7 +18,7 @@ Defaults: `ProductEntry.json`, `catalog.db`. The run modifies the db file, so tr
 | Fuzzy matching | Not used. Would risk merging distinct items (Hockey Skates vs Hockey Stick). |
 | Seller `Id` (GUID) vs `SellerProductId INTEGER` | Column changed to TEXT. Id is unique per seller, not global (many GUIDs repeat across sellers). |
 | Invalid GUIDs / id reused by a seller for another product | Row rejected and reported. |
-| Same seller, same product, different ids | One link kept (first), reported as note. |
+| Same seller, same product, different ids | One link kept (first), no new link, not reported. |
 | Re-running the same file | Idempotent. |
 | Existing product with missing brand/category | Gaps filled from feed, existing values never overwritten. |
 | Malicious string in a feed | All writes are parameterized (EF Core); stored verbatim. |

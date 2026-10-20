@@ -22,6 +22,7 @@ public static class SchemaUpgrader
         V5_ImportRunState,
         V6_DropRejectedEntrySource,
         V7_ProductNormalizedName,
+        V8_DropImportRunNotes,
     ];
 
     public static int CurrentVersion => Steps.Length;
@@ -110,7 +111,7 @@ public static class SchemaUpgrader
         }
     }
 
-    /// <summary>ImportRun gets LinkedToExisting, AlreadyLinked and Notes so a run fully describes its report.</summary>
+    /// <summary>ImportRun gets LinkedToExisting, AlreadyLinked and Notes (dropped in v8) so a run fully describes its report.</summary>
     private static void V4_ImportRunReportFields(CatalogDbContext db)
     {
         db.Database.ExecuteSqlRaw("ALTER TABLE ImportRun ADD COLUMN LinkedToExisting INTEGER NOT NULL DEFAULT 0");
@@ -139,4 +140,8 @@ public static class SchemaUpgrader
             db.Database.ExecuteSqlInterpolated($"UPDATE Product SET NormalizedName = {ProductKey.Normalize(r.Name)} WHERE Id = {r.Id}");
         db.Database.ExecuteSqlRaw("CREATE INDEX IX_Product_NormalizedName ON Product (NormalizedName)");
     }
+
+    /// <summary>ImportRun.Notes dropped, not tracked anymore.</summary>
+    private static void V8_DropImportRunNotes(CatalogDbContext db) =>
+        db.Database.ExecuteSqlRaw("ALTER TABLE ImportRun DROP COLUMN Notes");
 }
