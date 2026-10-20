@@ -30,6 +30,7 @@ public class CatalogDbContext(DbContextOptions<CatalogDbContext> options) : DbCo
         {
             e.ToTable("Product");
             e.HasIndex(p => p.NormalizedKey);
+            e.HasIndex(p => p.NormalizedName);
         });
         b.Entity<ImportRun>(e =>
         {

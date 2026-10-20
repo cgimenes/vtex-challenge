@@ -12,12 +12,14 @@ namespace VtexChallenge.Data;
 /// v3: ImportRun table + ImportId on Product, SellerProduct and RejectedEntry, so one import can be undone.
 /// v4: ImportRun gets LinkedToExisting, AlreadyLinked and Notes so a run fully describes its report.
 /// v5: ImportRun gets State (Running/Completed/Failed) and Error.
+/// v6: RejectedEntry.Source dropped, the source file is on its ImportRun.
+/// v7: Product.NormalizedName (+ index), so match candidates are fetched per batch instead of loading the catalog.
 /// </summary>
 public static class SchemaUpgrader
 {
     private record ProductRow(int Id, string Name, string? Brand);
 
-    public const int CurrentVersion = 5;
+    public const int CurrentVersion = 7;
 
     public static void Upgrade(CatalogDbContext db)
     {
@@ -106,6 +108,18 @@ public static class SchemaUpgrader
             // runs recorded before v5 were written inside the import transaction, so they all completed
             db.Database.ExecuteSqlRaw("ALTER TABLE ImportRun ADD COLUMN State TEXT NOT NULL DEFAULT 'Completed'");
             db.Database.ExecuteSqlRaw("ALTER TABLE ImportRun ADD COLUMN Error TEXT");
+        }
+
+        if (version < 6)
+            db.Database.ExecuteSqlRaw("ALTER TABLE RejectedEntry DROP COLUMN Source");
+
+        if (version < 7)
+        {
+            db.Database.ExecuteSqlRaw("ALTER TABLE Product ADD COLUMN NormalizedName TEXT");
+            var rows = db.Database.SqlQueryRaw<ProductRow>("SELECT Id, Name, Brand FROM Product").ToList();
+            foreach (var r in rows)
+                db.Database.ExecuteSqlInterpolated($"UPDATE Product SET NormalizedName = {ProductKey.Normalize(r.Name)} WHERE Id = {r.Id}");
+            db.Database.ExecuteSqlRaw("CREATE INDEX IX_Product_NormalizedName ON Product (NormalizedName)");
         }
 
         db.Database.ExecuteSqlRaw($"PRAGMA user_version = {CurrentVersion}");

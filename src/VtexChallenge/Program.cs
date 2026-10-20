@@ -13,13 +13,10 @@ using var db = CatalogDbContext.Open(dbPath);
 if (TryUpgrade(db) is { } dbError)
     return Fail(2, $"Cannot use database {dbPath}: {dbError}");
 
-using var cts = new CancellationTokenSource();
-Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
-
 ImportReport report;
 try
 {
-    report = await ImportFileAsync(db, entriesPath, cts.Token);
+    report = await ImportFileAsync(db, entriesPath);
 }
 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
 {
@@ -56,14 +53,14 @@ static string? TryUpgrade(CatalogDbContext db)
     }
 }
 
-static async Task<ImportReport> ImportFileAsync(CatalogDbContext db, string entriesPath, CancellationToken ct)
+static async Task<ImportReport> ImportFileAsync(CatalogDbContext db, string entriesPath)
 {
     // stream entries one by one instead of loading the whole file
     await using var file = File.OpenRead(entriesPath);
     var entries = JsonSerializer.DeserializeAsyncEnumerable<SellerProductEntry>(file,
         new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
-    return await new CatalogConsolidator(db).ImportAsync(entries, Path.GetFileName(entriesPath), ct);
+    return await new CatalogConsolidator(db).ImportAsync(entries, Path.GetFileName(entriesPath));
 }
 
 static int PrintResult(ImportReport report)

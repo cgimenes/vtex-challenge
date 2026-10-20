@@ -9,7 +9,6 @@ public class RejectedEntry
     public string? Brand { get; set; }
     public string? Category { get; set; }
     public string Reason { get; set; } = "";
-    public string? Source { get; set; }
     public DateTime RejectedAt { get; set; }
     public Guid? ImportId { get; set; }
 }

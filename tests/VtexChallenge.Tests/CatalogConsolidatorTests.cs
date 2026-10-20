@@ -150,20 +150,18 @@ public class CatalogConsolidatorTests : IDisposable
         Assert.Single(r.Notes);
     }
 
-    private static async IAsyncEnumerable<SellerProductEntry?> ThenThrow(Exception ex, CancellationTokenSource? cts = null, params SellerProductEntry[] first)
+    private static async IAsyncEnumerable<SellerProductEntry?> ThenThrow(Exception ex, params SellerProductEntry[] first)
     {
         foreach (var e in first) yield return e;
-        cts?.Cancel();
         await Task.Yield();
-        if (cts is null) throw ex;
-        yield return E(99, "Z", "Never Processed", "Nobody");
+        throw ex;
     }
 
-    private ImportReport RunStream(IAsyncEnumerable<SellerProductEntry?> stream, CancellationToken ct = default)
+    private ImportReport RunStream(IAsyncEnumerable<SellerProductEntry?> stream)
     {
         using var db = CatalogDbContext.Open(_path);
         SchemaUpgrader.Upgrade(db);
-        return new CatalogConsolidator(db).ImportAsync(stream, "test", ct).GetAwaiter().GetResult();
+        return new CatalogConsolidator(db).ImportAsync(stream, "test").GetAwaiter().GetResult();
     }
 
     [Fact]
@@ -179,7 +177,7 @@ public class CatalogConsolidatorTests : IDisposable
     [Fact]
     public void FeedFailingMidwayRollsBackEverythingAndMarksRunFailed()
     {
-        var r = RunStream(ThenThrow(new System.Text.Json.JsonException("bad token"), null,
+        var r = RunStream(ThenThrow(new System.Text.Json.JsonException("bad token"),
             E(1, "A", "Brand New Gadget", "Acme"), E(2, "A", "iPhone 15 Pro", "Apple"),
             new SellerProductEntry("bad", "A", "X", null, null)));
 
@@ -196,20 +194,9 @@ public class CatalogConsolidatorTests : IDisposable
     }
 
     [Fact]
-    public void CancellationRollsBackAndMarksRunFailed()
-    {
-        using var cts = new CancellationTokenSource();
-        var r = RunStream(ThenThrow(new Exception(), cts, E(1, "A", "Brand New Gadget", "Acme")), cts.Token);
-
-        Assert.Equal(ImportState.Failed, r.State);
-        Assert.Contains("cancelled", r.Error);
-        Assert.Equal((3, 0), Counts());
-    }
-
-    [Fact]
     public void FailedRunDoesNotBlockNextImport()
     {
-        RunStream(ThenThrow(new Exception("boom"), null, E(1, "A", "iPhone 15 Pro", "Apple")));
+        RunStream(ThenThrow(new Exception("boom"), E(1, "A", "iPhone 15 Pro", "Apple")));
         var ok = Run(E(1, "A", "iPhone 15 Pro", "Apple"));
         Assert.Equal(ImportState.Completed, ok.State);
         Assert.Equal((3, 1), Counts());
@@ -225,6 +212,36 @@ public class CatalogConsolidatorTests : IDisposable
         }
         using var db2 = CatalogDbContext.Open(_path);
         Assert.Throws<InvalidOperationException>(() => SchemaUpgrader.Upgrade(db2));
+    }
+
+    // feed larger than one chunk (500), so lookups must see rows saved by earlier chunks
+    [Fact]
+    public void DuplicatesAcrossChunksStillCollapse()
+    {
+        var entries = Enumerable.Range(1, 1200).Select(i => E(i, "A", $"Chunk Product {i % 10}", "Acme")).ToArray();
+        var r = Run(entries);
+        Assert.Equal(10, r.ProductsInserted);
+        Assert.Equal((3 + 10, 10), Counts());
+        Assert.Equal(1190, r.Notes.Count);
+    }
+
+    [Fact]
+    public void SellerIdReuseIsDetectedAcrossChunks()
+    {
+        var filler = Enumerable.Range(2, 599).Select(i => E(i, "A", $"Filler {i}", "Acme"));
+        var r = Run([E(1, "A", "Chunk P0", "Acme"), .. filler, E(1, "A", "Chunk P1", "Acme")]);
+        Assert.Equal(1, r.Rejected);
+        Assert.Equal(601, r.Read);
+    }
+
+    [Fact]
+    public void ExistingCatalogProductMatchedInLaterChunk()
+    {
+        var filler = Enumerable.Range(1, 600).Select(i => E(i, "A", $"Filler {i}", "Acme"));
+        var r = Run([.. filler, E(1000, "B", "smart tv  samsung 55\"", "Samsung")]);
+        Assert.Equal(600, r.ProductsInserted);
+        Assert.Equal(1, r.LinkedToExisting);
+        Assert.Equal((3 + 600, 601), Counts());
     }
 
     [Fact]

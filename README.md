@@ -28,7 +28,7 @@ Defaults: `ProductEntry.json`, `catalog.db`. The run modifies the db file, so tr
 - `Product.NormalizedKey` + index, backfilled for existing rows.
 
 ## Import state and failures
-`ImportRun.State` is `Running`, `Completed` or `Failed` (`Error` holds the reason). The run row is committed before the data transaction, so a failed import leaves a record even though all its data is rolled back (imports are all or nothing). Failures recorded: malformed or non-array JSON, database errors, Ctrl+C. A run stuck in `Running` means the process was killed.
+`ImportRun.State` is `Running`, `Completed` or `Failed` (`Error` holds the reason). The run row is committed before the data transaction, so a failed import leaves a record even though all its data is rolled back (imports are all or nothing). Failures recorded: malformed or non-array JSON, database errors. A run stuck in `Running` means the process was killed (including Ctrl+C, which is not handled).
 
 Checked before importing: entries file exists, database file exists (SQLite would otherwise create an empty one), file is a SQLite database, schema is not newer than the tool.
 
@@ -44,5 +44,8 @@ DELETE FROM ImportRun     WHERE Id = '<id>';
 ```
 Brand/category gaps filled on products that already existed are not reverted.
 
+## Memory and scale
+Neither the feed nor the catalog is loaded whole. The feed is streamed and processed in chunks of 500 entries. For each chunk only the needed rows are fetched: products sharing a normalized name (`Product.NormalizedName`, indexed) and the sellers' links using the chunk's ids or pointing at those products. Each chunk is saved and the EF change tracker cleared, so memory is bounded by the chunk size. Cost is a few queries per chunk.
+
 ## Known limits
-Synonym map is hand written. Whole file loaded in memory and imported in one transaction. Not built for scale, per the challenge brief.
+Synonym map is hand written. The import runs in a single transaction, so a very large feed holds the SQLite write lock for its duration. Not built for scale beyond that, per the challenge brief.
