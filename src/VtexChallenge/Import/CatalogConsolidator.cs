@@ -12,7 +12,6 @@ public class CatalogConsolidator(CatalogDbContext db)
     public async Task<ImportReport> ImportAsync(IAsyncEnumerable<SellerProductEntry?> entries, string? source = null)
     {
         var run = new ImportRun { Id = Guid.NewGuid(), Source = source, StartedAt = DateTime.UtcNow };
-        var report = new ImportReport { ImportId = run.Id };
         await using var tx = await db.Database.BeginTransactionAsync();
 
         // normalized name -> products with that name (brand may differ or be missing)
@@ -34,10 +33,11 @@ public class CatalogConsolidator(CatalogDbContext db)
         await db.SaveChangesAsync();
 
         var pending = 0;
+        var notes = new List<string>();
 
         void Reject(SellerProductEntry? e, string reason)
         {
-            report.Rejected++;
+            run.Rejected++;
             pending++;
             db.RejectedEntries.Add(new RejectedEntry
             {
@@ -49,7 +49,7 @@ public class CatalogConsolidator(CatalogDbContext db)
 
         await foreach (var e in entries)
         {
-            report.Read++;
+            run.EntriesRead++;
             if (e is null)
             {
                 Reject(null, "null entry");
@@ -77,7 +77,7 @@ public class CatalogConsolidator(CatalogDbContext db)
 
             if (skus.TryGetValue((seller, sku), out var owned))
             {
-                if (match == owned) report.AlreadyLinked++;
+                if (match == owned) run.AlreadyLinked++;
                 else Reject(e, $"seller reused this id for a different product (\"{owned.Name}\")");
                 continue;
             }
@@ -91,7 +91,7 @@ public class CatalogConsolidator(CatalogDbContext db)
                 };
                 db.Products.Add(match);
                 Index(byName, match);
-                report.ProductsInserted++;
+                run.ProductsInserted++;
             }
             else
             {
@@ -103,12 +103,12 @@ public class CatalogConsolidator(CatalogDbContext db)
                     match.NormalizedKey = ProductKey.Build(match.Brand, match.Name);
                     db.Products.Update(match); // may be detached after a batch flush
                 }
-                report.LinkedToExisting++;
+                run.LinkedToExisting++;
             }
 
             if (!links.Add((seller, match)))
             {
-                report.Notes.Add($"{label}: seller already offers \"{match.Name}\" under another id, kept first");
+                notes.Add($"{label}: seller already offers \"{match.Name}\" under another id, kept first");
                 continue;
             }
             skus[(seller, sku)] = match;
@@ -116,7 +116,7 @@ public class CatalogConsolidator(CatalogDbContext db)
             var link = new SellerProduct { SellerName = seller, SellerProductId = sku, ImportId = run.Id };
             if (match.Id == 0) link.Product = match; else link.ProductId = match.Id;
             db.SellerProducts.Add(link);
-            report.LinksCreated++;
+            run.LinksCreated++;
 
             // flush periodically and drop tracked entities so memory stays flat
             if (++pending >= BatchSize)
@@ -128,15 +128,12 @@ public class CatalogConsolidator(CatalogDbContext db)
         }
 
         run.FinishedAt = DateTime.UtcNow;
-        run.EntriesRead = report.Read;
-        run.ProductsInserted = report.ProductsInserted;
-        run.LinksCreated = report.LinksCreated;
-        run.Rejected = report.Rejected;
+        run.Notes = notes.Count > 0 ? string.Join('\n', notes) : null;
         db.ImportRuns.Update(run); // detached if a batch flush cleared the tracker
         await db.SaveChangesAsync();
         db.ChangeTracker.Clear();
         await tx.CommitAsync();
-        return report;
+        return ImportReport.From(run);
     }
 
     private static string? Blank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();

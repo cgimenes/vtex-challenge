@@ -10,12 +10,13 @@ namespace VtexChallenge.Data;
 ///     Product.NormalizedKey (+ index) used for duplicate detection.
 /// v2: RejectedEntry table, audit log of feed rows that could not be imported.
 /// v3: ImportRun table + ImportId on Product, SellerProduct and RejectedEntry, so one import can be undone.
+/// v4: ImportRun gets LinkedToExisting, AlreadyLinked and Notes so a run fully describes its report.
 /// </summary>
 public static class SchemaUpgrader
 {
     private record ProductRow(int Id, string Name, string? Brand);
 
-    public const int CurrentVersion = 3;
+    public const int CurrentVersion = 4;
 
     public static void Upgrade(CatalogDbContext db)
     {
@@ -87,6 +88,13 @@ public static class SchemaUpgrader
                 db.Database.ExecuteSqlRaw($"ALTER TABLE {table} ADD COLUMN ImportId TEXT REFERENCES ImportRun (Id)");
                 db.Database.ExecuteSqlRaw($"CREATE INDEX IX_{table}_ImportId ON {table} (ImportId)");
             }
+        }
+
+        if (version < 4)
+        {
+            db.Database.ExecuteSqlRaw("ALTER TABLE ImportRun ADD COLUMN LinkedToExisting INTEGER NOT NULL DEFAULT 0");
+            db.Database.ExecuteSqlRaw("ALTER TABLE ImportRun ADD COLUMN AlreadyLinked INTEGER NOT NULL DEFAULT 0");
+            db.Database.ExecuteSqlRaw("ALTER TABLE ImportRun ADD COLUMN Notes TEXT");
         }
 
         db.Database.ExecuteSqlRaw($"PRAGMA user_version = {CurrentVersion}");

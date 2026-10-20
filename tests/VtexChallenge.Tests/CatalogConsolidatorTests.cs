@@ -138,6 +138,19 @@ public class CatalogConsolidatorTests : IDisposable
     }
 
     [Fact]
+    public void RunStoresEverythingTheReportShows()
+    {
+        var r = Run(E(1, "A", "iPhone 15 Pro", "Apple"), E(1, "A", "iPhone 15  Pro", "Apple"),
+                    E(2, "A", "iPhone 15 Pro", "Apple"), E(3, "B", "Smart TV Samsung 55", "Samsung"));
+        using var db = CatalogDbContext.Open(_path);
+        var run = db.ImportRuns.Single();
+        Assert.Equal(r.LinkedToExisting, run.LinkedToExisting);
+        Assert.Equal(r.AlreadyLinked, run.AlreadyLinked);
+        Assert.Equal(r.Notes, run.Notes!.Split('\n'));
+        Assert.Single(r.Notes);
+    }
+
+    [Fact]
     public void TwoRunsGetDifferentIds()
     {
         var a = Run(E(1, "A", "iPhone 15 Pro", "Apple"));
