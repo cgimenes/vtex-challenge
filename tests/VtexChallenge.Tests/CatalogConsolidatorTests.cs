@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using VtexChallenge.Data;
 using VtexChallenge.Import;
+using VtexChallenge.Migrations;
 
 namespace VtexChallenge.Tests;
 

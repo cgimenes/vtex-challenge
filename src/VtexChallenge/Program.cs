@@ -2,6 +2,7 @@ using System.Data.Common;
 using System.Text.Json;
 using VtexChallenge.Data;
 using VtexChallenge.Import;
+using VtexChallenge.Migrations;
 
 // exit codes: 0 ok, 1 import failed (rolled back), 2 bad input or database
 var (entriesPath, dbPath) = ParseArgs(args);
