@@ -11,17 +11,21 @@ namespace VtexChallenge.Data;
 /// v2: RejectedEntry table, audit log of feed rows that could not be imported.
 /// v3: ImportRun table + ImportId on Product, SellerProduct and RejectedEntry, so one import can be undone.
 /// v4: ImportRun gets LinkedToExisting, AlreadyLinked and Notes so a run fully describes its report.
+/// v5: ImportRun gets State (Running/Completed/Failed) and Error.
 /// </summary>
 public static class SchemaUpgrader
 {
     private record ProductRow(int Id, string Name, string? Brand);
 
-    public const int CurrentVersion = 4;
+    public const int CurrentVersion = 5;
 
     public static void Upgrade(CatalogDbContext db)
     {
         var version = db.Database.SqlQueryRaw<int>("PRAGMA user_version").AsEnumerable().Single();
-        if (version >= CurrentVersion) return;
+        if (version > CurrentVersion)
+            throw new InvalidOperationException(
+                $"Database schema version {version} is newer than this tool supports ({CurrentVersion}). Update the tool.");
+        if (version == CurrentVersion) return;
 
         using var tx = db.Database.BeginTransaction();
 
@@ -95,6 +99,13 @@ public static class SchemaUpgrader
             db.Database.ExecuteSqlRaw("ALTER TABLE ImportRun ADD COLUMN LinkedToExisting INTEGER NOT NULL DEFAULT 0");
             db.Database.ExecuteSqlRaw("ALTER TABLE ImportRun ADD COLUMN AlreadyLinked INTEGER NOT NULL DEFAULT 0");
             db.Database.ExecuteSqlRaw("ALTER TABLE ImportRun ADD COLUMN Notes TEXT");
+        }
+
+        if (version < 5)
+        {
+            // runs recorded before v5 were written inside the import transaction, so they all completed
+            db.Database.ExecuteSqlRaw("ALTER TABLE ImportRun ADD COLUMN State TEXT NOT NULL DEFAULT 'Completed'");
+            db.Database.ExecuteSqlRaw("ALTER TABLE ImportRun ADD COLUMN Error TEXT");
         }
 
         db.Database.ExecuteSqlRaw($"PRAGMA user_version = {CurrentVersion}");

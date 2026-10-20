@@ -27,6 +27,13 @@ Defaults: `ProductEntry.json`, `catalog.db`. The run modifies the db file, so tr
 - `SellerProduct.SellerProductId` INTEGER to TEXT, unique `(SellerName, SellerProductId)` and `(SellerName, ProductId)`.
 - `Product.NormalizedKey` + index, backfilled for existing rows.
 
+## Import state and failures
+`ImportRun.State` is `Running`, `Completed` or `Failed` (`Error` holds the reason). The run row is committed before the data transaction, so a failed import leaves a record even though all its data is rolled back (imports are all or nothing). Failures recorded: malformed or non-array JSON, database errors, Ctrl+C. A run stuck in `Running` means the process was killed.
+
+Checked before importing: entries file exists, database file exists (SQLite would otherwise create an empty one), file is a SQLite database, schema is not newer than the tool.
+
+Exit codes: `0` completed, `1` import failed (nothing saved), `2` bad input or database.
+
 ## Undoing an import
 Each run inserts an `ImportRun` row (id, source, timestamps, counters). Every `Product`, `SellerProduct` and `RejectedEntry` created by that run carries its `ImportId`. To remove an import (order matters because of the FK):
 ```sql

@@ -31,7 +31,11 @@ public class CatalogDbContext(DbContextOptions<CatalogDbContext> options) : DbCo
             e.ToTable("Product");
             e.HasIndex(p => p.NormalizedKey);
         });
-        b.Entity<ImportRun>(e => e.ToTable("ImportRun"));
+        b.Entity<ImportRun>(e =>
+        {
+            e.ToTable("ImportRun");
+            e.Property(r => r.State).HasConversion<string>();
+        });
         b.Entity<RejectedEntry>(e => e.ToTable("RejectedEntry"));
         b.Entity<SellerProduct>(e =>
         {

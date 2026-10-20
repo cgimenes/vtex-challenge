@@ -150,6 +150,83 @@ public class CatalogConsolidatorTests : IDisposable
         Assert.Single(r.Notes);
     }
 
+    private static async IAsyncEnumerable<SellerProductEntry?> ThenThrow(Exception ex, CancellationTokenSource? cts = null, params SellerProductEntry[] first)
+    {
+        foreach (var e in first) yield return e;
+        cts?.Cancel();
+        await Task.Yield();
+        if (cts is null) throw ex;
+        yield return E(99, "Z", "Never Processed", "Nobody");
+    }
+
+    private ImportReport RunStream(IAsyncEnumerable<SellerProductEntry?> stream, CancellationToken ct = default)
+    {
+        using var db = CatalogDbContext.Open(_path);
+        SchemaUpgrader.Upgrade(db);
+        return new CatalogConsolidator(db).ImportAsync(stream, "test", ct).GetAwaiter().GetResult();
+    }
+
+    [Fact]
+    public void CompletedRunIsMarkedCompleted()
+    {
+        var r = Run(E(1, "A", "iPhone 15 Pro", "Apple"));
+        Assert.Equal(ImportState.Completed, r.State);
+        using var db = CatalogDbContext.Open(_path);
+        Assert.Equal(ImportState.Completed, db.ImportRuns.Single().State);
+        Assert.Null(db.ImportRuns.Single().Error);
+    }
+
+    [Fact]
+    public void FeedFailingMidwayRollsBackEverythingAndMarksRunFailed()
+    {
+        var r = RunStream(ThenThrow(new System.Text.Json.JsonException("bad token"), null,
+            E(1, "A", "Brand New Gadget", "Acme"), E(2, "A", "iPhone 15 Pro", "Apple"),
+            new SellerProductEntry("bad", "A", "X", null, null)));
+
+        Assert.Equal(ImportState.Failed, r.State);
+        Assert.Contains("malformed feed", r.Error);
+        Assert.Equal((3, 0), Counts());          // no product, no link
+        using var db = CatalogDbContext.Open(_path);
+        Assert.Empty(db.RejectedEntries);          // rejects rolled back too
+        var run = db.ImportRuns.Single();          // but the run row survives
+        Assert.Equal(ImportState.Failed, run.State);
+        Assert.Contains("bad token", run.Error);
+        Assert.Equal(0, run.LinksCreated);
+        Assert.NotNull(run.FinishedAt);
+    }
+
+    [Fact]
+    public void CancellationRollsBackAndMarksRunFailed()
+    {
+        using var cts = new CancellationTokenSource();
+        var r = RunStream(ThenThrow(new Exception(), cts, E(1, "A", "Brand New Gadget", "Acme")), cts.Token);
+
+        Assert.Equal(ImportState.Failed, r.State);
+        Assert.Contains("cancelled", r.Error);
+        Assert.Equal((3, 0), Counts());
+    }
+
+    [Fact]
+    public void FailedRunDoesNotBlockNextImport()
+    {
+        RunStream(ThenThrow(new Exception("boom"), null, E(1, "A", "iPhone 15 Pro", "Apple")));
+        var ok = Run(E(1, "A", "iPhone 15 Pro", "Apple"));
+        Assert.Equal(ImportState.Completed, ok.State);
+        Assert.Equal((3, 1), Counts());
+    }
+
+    [Fact]
+    public void DatabaseNewerThanToolIsRefused()
+    {
+        using (var db = CatalogDbContext.Open(_path))
+        {
+            SchemaUpgrader.Upgrade(db);
+            db.Database.ExecuteSqlRaw("PRAGMA user_version = 99");
+        }
+        using var db2 = CatalogDbContext.Open(_path);
+        Assert.Throws<InvalidOperationException>(() => SchemaUpgrader.Upgrade(db2));
+    }
+
     [Fact]
     public void TwoRunsGetDifferentIds()
     {

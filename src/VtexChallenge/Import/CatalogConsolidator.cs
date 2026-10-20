@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using VtexChallenge.Data;
 
@@ -9,10 +10,52 @@ public class CatalogConsolidator(CatalogDbContext db)
 
     private record Candidate(Product Product, string Brand, string Name);
 
-    public async Task<ImportReport> ImportAsync(IAsyncEnumerable<SellerProductEntry?> entries, string? source = null)
+    /// <summary>
+    /// Imports the feed atomically: either every row is saved or none is. Failures (malformed feed,
+    /// database error, cancellation) are recorded on the ImportRun as Failed and returned in the report.
+    /// </summary>
+    public async Task<ImportReport> ImportAsync(
+        IAsyncEnumerable<SellerProductEntry?> entries, string? source = null, CancellationToken ct = default)
     {
-        var run = new ImportRun { Id = Guid.NewGuid(), Source = source, StartedAt = DateTime.UtcNow };
-        await using var tx = await db.Database.BeginTransactionAsync();
+        var run = new ImportRun
+        {
+            Id = Guid.NewGuid(), Source = source, StartedAt = DateTime.UtcNow, State = ImportState.Running,
+        };
+
+        // committed on its own, before the data transaction, so a failed import still leaves a trace
+        db.ImportRuns.Add(run);
+        await db.SaveChangesAsync(CancellationToken.None);
+        db.ChangeTracker.Clear();
+
+        try
+        {
+            await ImportCoreAsync(run, entries, source, ct);
+            return ImportReport.From(run);
+        }
+        catch (Exception ex)
+        {
+            // the transaction was disposed uncommitted, so none of this run's data was saved
+            db.ChangeTracker.Clear();
+            var error = $"{Describe(ex)} (after {run.EntriesRead} entries, nothing was saved)";
+            run.State = ImportState.Failed;
+            run.Error = error;
+            run.FinishedAt = DateTime.UtcNow;
+            run.EntriesRead = run.ProductsInserted = run.LinksCreated = run.Rejected = 0;
+            run.LinkedToExisting = run.AlreadyLinked = 0;
+            run.Notes = null;
+
+            await db.ImportRuns.Where(r => r.Id == run.Id).ExecuteUpdateAsync(s => s
+                .SetProperty(r => r.State, run.State)
+                .SetProperty(r => r.Error, run.Error)
+                .SetProperty(r => r.FinishedAt, run.FinishedAt), CancellationToken.None);
+            return ImportReport.From(run);
+        }
+    }
+
+    private async Task ImportCoreAsync(
+        ImportRun run, IAsyncEnumerable<SellerProductEntry?> entries, string? source, CancellationToken ct)
+    {
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
 
         // normalized name -> products with that name (brand may differ or be missing)
         var byName = new Dictionary<string, List<Candidate>>();
@@ -27,10 +70,6 @@ public class CatalogConsolidator(CatalogDbContext db)
             skus[(sp.SellerName, sp.SellerProductId)] = sp.Product!;
             links.Add((sp.SellerName, sp.Product!));
         }
-
-        // the run row must exist before any row references it
-        db.ImportRuns.Add(run);
-        await db.SaveChangesAsync();
 
         var pending = 0;
         var notes = new List<string>();
@@ -47,8 +86,9 @@ public class CatalogConsolidator(CatalogDbContext db)
             });
         }
 
-        await foreach (var e in entries)
+        await foreach (var e in entries.WithCancellation(ct))
         {
+            ct.ThrowIfCancellationRequested();
             run.EntriesRead++;
             if (e is null)
             {
@@ -121,20 +161,28 @@ public class CatalogConsolidator(CatalogDbContext db)
             // flush periodically and drop tracked entities so memory stays flat
             if (++pending >= BatchSize)
             {
-                await db.SaveChangesAsync();
+                await db.SaveChangesAsync(ct);
                 db.ChangeTracker.Clear();
                 pending = 0;
             }
         }
 
+        run.State = ImportState.Completed;
         run.FinishedAt = DateTime.UtcNow;
         run.Notes = notes.Count > 0 ? string.Join('\n', notes) : null;
-        db.ImportRuns.Update(run); // detached if a batch flush cleared the tracker
-        await db.SaveChangesAsync();
+        db.ImportRuns.Update(run);
+        await db.SaveChangesAsync(ct);
         db.ChangeTracker.Clear();
-        await tx.CommitAsync();
-        return ImportReport.From(run);
+        await tx.CommitAsync(ct);
     }
+
+    private static string Describe(Exception ex) => ex switch
+    {
+        OperationCanceledException => "import cancelled",
+        JsonException j => $"malformed feed: {j.Message}",
+        DbUpdateException { InnerException: { } inner } => $"database error: {inner.Message}",
+        _ => ex.Message,
+    };
 
     private static string? Blank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 

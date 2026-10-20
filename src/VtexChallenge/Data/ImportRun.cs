@@ -4,6 +4,9 @@ namespace VtexChallenge.Data;
 public class ImportRun
 {
     public Guid Id { get; set; }
+    public ImportState State { get; set; }
+    /// <summary>Why the run failed; null otherwise.</summary>
+    public string? Error { get; set; }
     public string? Source { get; set; }
     public DateTime StartedAt { get; set; }
     public DateTime? FinishedAt { get; set; }
