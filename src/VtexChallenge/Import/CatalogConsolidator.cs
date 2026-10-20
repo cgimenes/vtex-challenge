@@ -58,7 +58,10 @@ public class CatalogConsolidator(CatalogDbContext db)
     {
         var run = new ImportRun
         {
-            Id = Guid.NewGuid(), Source = source, StartedAt = DateTime.UtcNow, State = ImportState.Running,
+            Id = Guid.NewGuid(),
+            Source = source,
+            StartedAt = DateTime.UtcNow,
+            State = ImportState.Running,
         };
         db.ImportRuns.Add(run);
         await db.SaveChangesAsync();
@@ -80,8 +83,8 @@ public class CatalogConsolidator(CatalogDbContext db)
     /// <summary>Memory stays bounded by the chunk: look up only what it needs, save, then forget it.</summary>
     private async Task ImportChunkAsync(Session session, SellerProductEntry?[] chunk)
     {
-        var items = chunk.Select(Check).ToList();
-        var batch = await LoadBatchAsync(items.Where(i => i.Valid is not null).Select(i => i.Valid!).ToList());
+        var items = chunk.Select(Check);
+        var batch = await LoadBatchAsync(items.Where(i => i.Valid is not null).Select(i => i.Valid!));
 
         foreach (var item in items)
             ProcessEntry(session, batch, item);
@@ -101,25 +104,24 @@ public class CatalogConsolidator(CatalogDbContext db)
     /// Fetches only the rows this chunk can match: products sharing a normalized name with an entry,
     /// and each seller's links that use one of the entry ids or point at one of those products.
     /// </summary>
-    private async Task<Batch> LoadBatchAsync(List<ValidEntry> valids)
+    private async Task<Batch> LoadBatchAsync(IEnumerable<ValidEntry> valids)
     {
         var batch = new Batch();
-        if (valids.Count == 0) return batch;
+        if (valids.Count() == 0) return batch;
 
-        var names = valids.Select(v => ProductKey.Normalize(v.Name)).Distinct().ToList();
-        var products = await db.Products.Where(p => names.Contains(p.NormalizedName!)).ToListAsync();
+        var names = valids.Select(v => ProductKey.Normalize(v.Name)).Distinct();
+        var products = db.Products.Where(p => names.Contains(p.NormalizedName!));
         foreach (var p in products)
             Index(batch.ByName, p);
 
-        var productIds = products.Select(p => p.Id).ToList();
+        var productIds = products.Select(p => p.Id);
         foreach (var bySeller in valids.GroupBy(v => v.Seller))
         {
             var seller = bySeller.Key;
-            var skus = bySeller.Select(v => v.Sku).Distinct().ToList();
-            var links = await db.SellerProducts
+            var skus = bySeller.Select(v => v.Sku).Distinct();
+            var links = db.SellerProducts
                 .Include(sp => sp.Product)
-                .Where(sp => sp.SellerName == seller && (skus.Contains(sp.SellerProductId) || productIds.Contains(sp.ProductId)))
-                .ToListAsync();
+                .Where(sp => sp.SellerName == seller && (skus.Contains(sp.SellerProductId) || productIds.Contains(sp.ProductId)));
             foreach (var sp in links)
             {
                 batch.Skus[(seller, sp.SellerProductId)] = sp.Product!;
@@ -168,9 +170,12 @@ public class CatalogConsolidator(CatalogDbContext db)
     {
         var product = new Product
         {
-            Name = entry.Name, Brand = entry.Brand, Category = entry.Category,
+            Name = entry.Name,
+            Brand = entry.Brand,
+            Category = entry.Category,
             NormalizedKey = ProductKey.Build(entry.Brand, entry.Name),
-            NormalizedName = ProductKey.Normalize(entry.Name), ImportId = session.Run.Id,
+            NormalizedName = ProductKey.Normalize(entry.Name),
+            ImportId = session.Run.Id,
         };
         db.Products.Add(product);
         Index(batch.ByName, product);
@@ -201,7 +206,10 @@ public class CatalogConsolidator(CatalogDbContext db)
 
         db.SellerProducts.Add(new SellerProduct
         {
-            SellerName = valid.Seller, SellerProductId = valid.Sku, Product = product, ImportId = session.Run.Id,
+            SellerName = valid.Seller,
+            SellerProductId = valid.Sku,
+            Product = product,
+            ImportId = session.Run.Id,
         });
         session.Run.LinksCreated++;
     }
@@ -211,9 +219,14 @@ public class CatalogConsolidator(CatalogDbContext db)
         session.Run.Rejected++;
         db.RejectedEntries.Add(new RejectedEntry
         {
-            SellerName = entry?.SellerName, SellerProductId = entry?.Id, Name = entry?.Name,
-            Brand = entry?.Brand, Category = entry?.Category,
-            Reason = reason, RejectedAt = DateTime.UtcNow, ImportId = session.Run.Id,
+            SellerName = entry?.SellerName,
+            SellerProductId = entry?.Id,
+            Name = entry?.Name,
+            Brand = entry?.Brand,
+            Category = entry?.Category,
+            Reason = reason,
+            RejectedAt = DateTime.UtcNow,
+            ImportId = session.Run.Id,
         });
     }
 
@@ -270,10 +283,10 @@ public class CatalogConsolidator(CatalogDbContext db)
         if (!byName.TryGetValue(ProductKey.Normalize(name), out var list)) return null;
         var nb = ProductKey.Normalize(brand);
 
-        var exact = list.Where(c => c.Brand == nb).Select(c => c.Product).Distinct().ToList();
-        if (exact.Count > 0) return exact.OrderBy(p => p.Id).First();
+        var exact = list.Where(c => c.Brand == nb).Select(c => c.Product).Distinct();
+        if (exact.Count() > 0) return exact.OrderBy(p => p.Id).First();
 
-        var loose = list.Where(c => nb == "" || c.Brand == "").Select(c => c.Product).Distinct().ToList();
-        return loose.Count == 1 ? loose[0] : null;
+        var loose = list.Where(c => nb == "" || c.Brand == "").Select(c => c.Product).Distinct();
+        return loose.FirstOrDefault();
     }
 }
