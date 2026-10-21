@@ -91,7 +91,7 @@ public class CatalogConsolidator(CatalogDbContext db)
     private async Task ImportChunkAsync(ImportRun run, SellerProductEntry?[] chunk)
     {
         var items = chunk.Select(Check);
-        var batch = await LoadBatchAsync(items.Where(i => i.Valid is not null).Select(i => i.Valid!));
+        var batch = LoadBatchAsync(items.Where(i => i.Valid is not null).Select(i => i.Valid!));
 
         foreach (var item in items)
             ProcessEntry(run, batch, item);
@@ -111,7 +111,7 @@ public class CatalogConsolidator(CatalogDbContext db)
     /// Fetches only the rows this chunk can match: products sharing a normalized name with an entry,
     /// and each seller's links that use one of the entry ids or point at one of those products.
     /// </summary>
-    private async Task<Batch> LoadBatchAsync(IEnumerable<ValidEntry> valids)
+    private Batch LoadBatchAsync(IEnumerable<ValidEntry> valids)
     {
         if (valids.Count() == 0) return new Batch([], [], []);
 
