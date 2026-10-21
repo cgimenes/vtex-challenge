@@ -8,17 +8,31 @@ public class CatalogConsolidator(CatalogDbContext db)
 {
     private const int BatchSize = 500;
 
-    private record Candidate(Product Product, string Brand, string Name);
+    private record Candidate(Product Product, string Brand, string Name)
+    {
+        public static Candidate From(Product p) => new(p, ProductKey.Normalize(p.Brand), ProductKey.Normalize(p.Name));
+    }
 
     /// <summary>Lookups for one chunk of the feed, fetched from the database for just that chunk.</summary>
-    private class Batch
+    private class Batch(
+        Dictionary<string, List<Candidate>> byName,
+        Dictionary<(string, string), Product> skus,
+        HashSet<(string, Product)> links)
     {
         // normalized name -> products with that name (brand may differ or be missing)
-        public Dictionary<string, List<Candidate>> ByName { get; } = [];
+        public Dictionary<string, List<Candidate>> ByName { get; } = byName;
         // (seller, sellerProductId) -> product
-        public Dictionary<(string, string), Product> Skus { get; } = [];
+        public Dictionary<(string, string), Product> Skus { get; } = skus;
         // (seller, product) pairs already linked
-        public HashSet<(string, Product)> Links { get; } = [];
+        public HashSet<(string, Product)> Links { get; } = links;
+
+        /// <summary>Makes a product inserted during this chunk matchable by the entries that follow.</summary>
+        public void AddProduct(Product product)
+        {
+            var candidate = Candidate.From(product);
+            if (!ByName.TryGetValue(candidate.Name, out var sameName)) ByName[candidate.Name] = sameName = [];
+            sameName.Add(candidate);
+        }
     }
 
     /// <summary>A feed entry with its validation outcome.</summary>
@@ -99,29 +113,33 @@ public class CatalogConsolidator(CatalogDbContext db)
     /// </summary>
     private async Task<Batch> LoadBatchAsync(IEnumerable<ValidEntry> valids)
     {
-        var batch = new Batch();
-        if (valids.Count() == 0) return batch;
+        if (valids.Count() == 0) return new Batch([], [], []);
 
         var names = valids.Select(v => ProductKey.Normalize(v.Name)).Distinct();
         var products = db.Products.Where(p => names.Contains(p.NormalizedName!));
-        foreach (var p in products)
-            Index(batch.ByName, p);
+        var byName = products
+            .Select(Candidate.From)
+            .GroupBy(c => c.Name)
+            .ToDictionary(g => g.Key, g => g.ToList());
 
         var productIds = products.Select(p => p.Id);
+        var skus = new Dictionary<(string, string), Product>();
+        var links = new HashSet<(string, Product)>();
         foreach (var bySeller in valids.GroupBy(v => v.Seller))
         {
             var seller = bySeller.Key;
-            var skus = bySeller.Select(v => v.Sku).Distinct();
-            var links = db.SellerProducts
+            var sellerSkus = bySeller.Select(v => v.Sku).Distinct();
+            var sellerLinks = db.SellerProducts
                 .Include(sp => sp.Product)
-                .Where(sp => sp.SellerName == seller && (skus.Contains(sp.SellerProductId) || productIds.Contains(sp.ProductId)));
-            foreach (var sp in links)
+                .Where(sp => sp.SellerName == seller && (sellerSkus.Contains(sp.SellerProductId) || productIds.Contains(sp.ProductId)));
+            foreach (var sp in sellerLinks)
             {
-                batch.Skus[(seller, sp.SellerProductId)] = sp.Product!;
-                batch.Links.Add((seller, sp.Product!));
+                skus[(seller, sp.SellerProductId)] = sp.Product!;
+                links.Add((seller, sp.Product!));
             }
         }
-        return batch;
+
+        return new Batch(byName, skus, links);
     }
 
     private void ProcessEntry(ImportRun run, Batch batch, Checked item)
@@ -170,7 +188,9 @@ public class CatalogConsolidator(CatalogDbContext db)
             ImportId = run.Id,
         };
         db.Products.Add(product);
-        Index(batch.ByName, product);
+        // not saved until the chunk ends, so the batch lookup can't see it yet; without this,
+        // a later entry in the same chunk for the same product would insert a duplicate
+        batch.AddProduct(product);
         run.ProductsInserted++;
         return product;
     }
@@ -251,13 +271,6 @@ public class CatalogConsolidator(CatalogDbContext db)
     };
 
     private static string? Blank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
-
-    private static void Index(Dictionary<string, List<Candidate>> byName, Product p)
-    {
-        var c = new Candidate(p, ProductKey.Normalize(p.Brand), ProductKey.Normalize(p.Name));
-        if (!byName.TryGetValue(c.Name, out var list)) byName[c.Name] = list = [];
-        list.Add(c);
-    }
 
     /// <summary>
     /// Exact brand+name wins. If either side has no brand, fall back to name only,
