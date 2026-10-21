@@ -264,7 +264,19 @@ public class CatalogConsolidatorTests : IDisposable
     [Fact]
     public void SameSellerTwoSkusForSameProductKeepsFirst()
     {
-        Run(E(1, "A", "iPhone 15 Pro", "Apple"), E(2, "A", "iPhone 15  Pro", "Apple"));
+        var r = Run(E(1, "A", "iPhone 15 Pro", "Apple"), E(2, "A", "iPhone 15  Pro", "Apple"));
+        Assert.Equal((3, 1), Counts());
+        Assert.Equal((1, 1), (r.LinkedToExisting, r.AlreadyLinked));
+    }
+
+    [Fact]
+    public void RerunCountsSecondIdVariantsAsAlreadyLinked()
+    {
+        var entries = new[] { E(1, "A", "iPhone 15 Pro", "Apple"), E(2, "A", "iPhone 15  Pro", "Apple") };
+        Run(entries);
+        var r = Run(entries);
+        Assert.Equal(0, r.LinkedToExisting);
+        Assert.Equal(2, r.AlreadyLinked);
         Assert.Equal((3, 1), Counts());
     }
 }

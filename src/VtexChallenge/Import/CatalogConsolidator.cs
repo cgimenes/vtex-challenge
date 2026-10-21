@@ -160,6 +160,13 @@ public class CatalogConsolidator(CatalogDbContext db)
             return;
         }
 
+        // seller already offers this product under another id: keep the first link
+        if (match is not null && batch.Links.Contains((valid.Seller, match)))
+        {
+            run.AlreadyLinked++;
+            return;
+        }
+
         var product = match is null ? InsertProduct(run, batch, valid) : FillGaps(run, match, valid);
         LinkSeller(run, batch, valid, product);
     }
@@ -208,8 +215,7 @@ public class CatalogConsolidator(CatalogDbContext db)
 
     private void LinkSeller(ImportRun run, Batch batch, ValidEntry valid, Product product)
     {
-        // seller already offers this product under another id: keep the first link
-        if (!batch.Links.Add((valid.Seller, product))) return;
+        batch.Links.Add((valid.Seller, product));
         batch.Skus[(valid.Seller, valid.Sku)] = product;
 
         db.SellerProducts.Add(new SellerProduct
